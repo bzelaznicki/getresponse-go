@@ -5,8 +5,12 @@ import (
 	"iter"
 )
 
-// defaultPageSize is the per-page size used by the All* iterators.
-const defaultPageSize = 1000
+// defaultPageSize is the per-page size requested by the All* iterators.
+const defaultPageSize = 100
+
+// maxPages bounds the All* iterators so an endpoint that ignores the page
+// parameter cannot keep the loop running forever.
+const maxPages = 10000
 
 // pageFetcher fetches a single page of T given query options.
 type pageFetcher[T any] func(ctx context.Context, opts ...QueryOption) ([]T, ResponseHeader, error)
@@ -16,7 +20,9 @@ type pageFetcher[T any] func(ctx context.Context, opts ...QueryOption) ([]T, Res
 // error. Caller-supplied options are preserved; the iterator sets page/perPage.
 func paginate[T any](ctx context.Context, fetch pageFetcher[T], opts []QueryOption) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
-		for page := 1; ; page++ {
+		yielded := 0
+
+		for page := 1; page <= maxPages; page++ {
 			pageOpts := append(append([]QueryOption{}, opts...), WithPage(page), WithPerPage(defaultPageSize))
 			items, header, err := fetch(ctx, pageOpts...)
 			if err != nil {
@@ -24,14 +30,37 @@ func paginate[T any](ctx context.Context, fetch pageFetcher[T], opts []QueryOpti
 				yield(zero, err)
 				return
 			}
+
+			// An empty page ends the walk whatever the counters claim.
+			if len(items) == 0 {
+				return
+			}
+
 			for _, item := range items {
 				if !yield(item, nil) {
 					return
 				}
 			}
-			// TotalPages is 0 when the endpoint returned no pagination header;
-			// treat that as a single page to avoid looping forever.
-			if header.TotalPages <= page {
+			yielded += len(items)
+
+			// Endpoints that serve fewer results per page than requested still
+			// report TotalPages for the perPage that was *asked for*: the
+			// campaigns endpoint caps pages at 100, so a request for 1000
+			// answers "TotalPages: 1" next to a 100-item page even when
+			// hundreds of lists remain. TotalCount does not depend on the page
+			// size, so it decides whenever the endpoint reports it, and
+			// TotalPages is only a fallback.
+			switch {
+			case header.TotalCount > 0:
+				if yielded >= header.TotalCount {
+					return
+				}
+			case header.TotalPages > 0:
+				if page >= header.TotalPages {
+					return
+				}
+			default:
+				// No pagination counters at all: treat it as a single page.
 				return
 			}
 		}
