@@ -44,12 +44,11 @@ func paginate[T any](ctx context.Context, fetch pageFetcher[T], opts []QueryOpti
 			yielded += len(items)
 
 			// Endpoints that serve fewer results per page than requested still
-			// report TotalPages for the perPage that was *asked for*: the
-			// campaigns endpoint caps pages at 100, so a request for 1000
-			// answers "TotalPages: 1" next to a 100-item page even when
-			// hundreds of lists remain. TotalCount does not depend on the page
-			// size, so it decides whenever the endpoint reports it, and
-			// TotalPages is only a fallback.
+			// report TotalPages for the perPage that was *asked for*, so a
+			// clamped page comes back beside a TotalPages that is too low and
+			// ends the walk while results remain. TotalCount does not depend on
+			// the page size, so it decides whenever the endpoint reports it,
+			// and TotalPages is only a fallback.
 			switch {
 			case header.TotalCount > 0:
 				if yielded >= header.TotalCount {

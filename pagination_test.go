@@ -13,7 +13,8 @@ import (
 // newPagedCampaignServer serves total campaigns the way the real campaigns
 // endpoint does: a perPage above maxPageSize is silently clamped, while the
 // TotalPages header is still calculated from the perPage that was requested.
-// Requesting 1000 therefore answers "TotalPages: 1" next to a clamped page.
+// A maxPageSize below defaultPageSize therefore answers a TotalPages that is
+// too low next to a clamped page.
 func newPagedCampaignServer(t *testing.T, total, maxPageSize int, sendCounters bool, requests *int) *httptest.Server {
 	t.Helper()
 
@@ -64,11 +65,13 @@ func collectCampaignIDs(t *testing.T, c *Client) []string {
 	return ids
 }
 
-// The endpoint caps pages at 100 while reporting TotalPages for the requested
-// 1000, so trusting TotalPages alone stopped the walk after the first page.
+// The endpoint clamps pages below the perPage we ask for while still reporting
+// TotalPages for the size that was requested, so trusting TotalPages alone
+// ended the walk early. Here 250 campaigns arrive 25 at a time while TotalPages
+// claims 3, and all 10 pages must still be read.
 func TestPaginateWalksPastClampedPageSize(t *testing.T) {
 	requests := 0
-	server := newPagedCampaignServer(t, 250, 100, true, &requests)
+	server := newPagedCampaignServer(t, 250, 25, true, &requests)
 	defer server.Close()
 
 	ids := collectCampaignIDs(t, newTestClient(t, server.URL))
@@ -79,18 +82,20 @@ func TestPaginateWalksPastClampedPageSize(t *testing.T) {
 	if ids[0] != "campaign-0" || ids[249] != "campaign-249" {
 		t.Fatalf("unexpected first/last campaign: %s / %s", ids[0], ids[249])
 	}
-	if requests != 3 {
-		t.Fatalf("expected 3 requests, got %d", requests)
+	if requests != 10 {
+		t.Fatalf("expected 10 requests, got %d", requests)
 	}
 }
 
+// A result set that exactly fills one honoured page is served in one request:
+// TotalCount says the walk is done, so no empty page is fetched to discover it.
 func TestPaginateHonouredPageSizeUsesSingleRequest(t *testing.T) {
 	requests := 0
-	server := newPagedCampaignServer(t, 250, defaultPageSize, true, &requests)
+	server := newPagedCampaignServer(t, defaultPageSize, defaultPageSize, true, &requests)
 	defer server.Close()
 
-	if ids := collectCampaignIDs(t, newTestClient(t, server.URL)); len(ids) != 250 {
-		t.Fatalf("expected 250 campaigns, got %d", len(ids))
+	if ids := collectCampaignIDs(t, newTestClient(t, server.URL)); len(ids) != defaultPageSize {
+		t.Fatalf("expected %d campaigns, got %d", defaultPageSize, len(ids))
 	}
 	if requests != 1 {
 		t.Fatalf("expected a single request, got %d", requests)
@@ -99,11 +104,11 @@ func TestPaginateHonouredPageSizeUsesSingleRequest(t *testing.T) {
 
 func TestPaginateWithoutCountersReadsOnePage(t *testing.T) {
 	requests := 0
-	server := newPagedCampaignServer(t, 250, 100, false, &requests)
+	server := newPagedCampaignServer(t, 250, defaultPageSize, false, &requests)
 	defer server.Close()
 
-	if ids := collectCampaignIDs(t, newTestClient(t, server.URL)); len(ids) != 100 {
-		t.Fatalf("expected the single page of 100, got %d", len(ids))
+	if ids := collectCampaignIDs(t, newTestClient(t, server.URL)); len(ids) != defaultPageSize {
+		t.Fatalf("expected the single page of %d, got %d", defaultPageSize, len(ids))
 	}
 	if requests != 1 {
 		t.Fatalf("expected a single request, got %d", requests)
@@ -112,7 +117,7 @@ func TestPaginateWithoutCountersReadsOnePage(t *testing.T) {
 
 func TestPaginateStopsWhenCallerBreaks(t *testing.T) {
 	requests := 0
-	server := newPagedCampaignServer(t, 250, 100, true, &requests)
+	server := newPagedCampaignServer(t, 250, defaultPageSize, true, &requests)
 	defer server.Close()
 
 	seen := 0
